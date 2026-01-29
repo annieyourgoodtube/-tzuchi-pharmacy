@@ -1,0 +1,27 @@
+# 排除相依套件
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# 排除記錄檔
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 排除 IDE 設定檔
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 排除環境變數（重要：金鑰不要上傳）
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local

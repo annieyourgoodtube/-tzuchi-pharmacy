@@ -1,11 +1,7 @@
-
 {
   "name": "台中慈院藥學部儲位查詢",
   "short_name": "藥部儲位",
   "description": "台中慈濟醫院藥學部專用儲位查詢系統",
-  "requestFramePermissions": [
-    "camera"
-  ],
   "theme_color": "#004766",
   "background_color": "#ffffff"
 }

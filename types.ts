@@ -1,4 +1,3 @@
-
 export interface Medication {
   id: string;
   name: string;          // 中文商品名
@@ -8,9 +7,4 @@ export interface Medication {
   location: string;      // 儲位
   description?: string;
   category?: string;
-}
-
-export enum AppTab {
-  SEARCH = 'search',
-  MANAGEMENT = 'management'
 }
