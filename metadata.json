@@ -3,5 +3,8 @@
   "short_name": "藥部儲位",
   "description": "台中慈濟醫院藥學部專用儲位查詢系統",
   "theme_color": "#004766",
-  "background_color": "#ffffff"
+  "background_color": "#ffffff",
+  "requestFramePermissions": [
+    "camera"
+  ]
 }

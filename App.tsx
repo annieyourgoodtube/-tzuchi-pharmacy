@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Medication } from './types';
 import { INITIAL_MEDICATIONS } from './constants';
+import { identifyMedicationFromImage } from './geminiService';
 import { 
   Search, 
   MapPin, 
@@ -8,8 +9,9 @@ import {
   Loader2,
   X,
   Database,
-  Heart,
-  Package
+  Package,
+  Camera,
+  Aperture
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -21,10 +23,15 @@ const App: React.FC = () => {
   });
   
   const [searchTerm, setSearchTerm] = useState('');
-  // 雖然移除了維護介面，但仍保留讀取 URL 的能力，方便日後擴充或維持現有邏輯
   const [sheetUrl] = useState(() => localStorage.getItem('pharmacy_sheet_url') || DEFAULT_URL);
   const [lastSynced, setLastSynced] = useState(() => localStorage.getItem('pharmacy_last_synced') || '');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  
+  // Camera State
+  const [showCamera, setShowCamera] = useState(false);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const headerColor = 'bg-[#004766]'; 
 
@@ -77,7 +84,8 @@ const App: React.FC = () => {
         name: ['中文', '名稱', '藥名', '品名', '商品名', 'name', 'drug', '商品名稱'],
         englishName: ['英文', 'eng', 'english', '英文名'],
         scientificName: ['學名', '成分', '成份', 'generic', 'scientific'],
-        specification: ['規格', '劑量', '包裝', '容量', 'spec', 'strength']
+        specification: ['規格', '劑量', '包裝', '容量', 'spec', 'strength'],
+        packetMachine: ['藥包機', 'atc', '包藥機', 'machine']
       };
 
       const findIdx = (keys: string[], defaultIdx: number) => {
@@ -90,7 +98,8 @@ const App: React.FC = () => {
         nameIdx: findIdx(fieldMap.name, 1),
         engIdx: findIdx(fieldMap.englishName, 2),
         sciIdx: findIdx(fieldMap.scientificName, 3),
-        specIdx: findIdx(fieldMap.specification, 4)
+        specIdx: findIdx(fieldMap.specification, 4),
+        atcIdx: findIdx(fieldMap.packetMachine, -1)
       };
 
       const startRow = headers.some(h => ['位', '名', '藥'].some(k => h.includes(k))) ? 1 : 0;
@@ -98,6 +107,8 @@ const App: React.FC = () => {
 
       const newMeds = dataLines.map((line, index) => {
         const values = splitCSVLine(line);
+        const isSmallPharmacy = values.some(v => v.includes('小藥庫'));
+        
         return {
           id: `med-${index}-${Date.now()}`,
           name: values[map.nameIdx] || '',
@@ -105,7 +116,9 @@ const App: React.FC = () => {
           scientificName: values[map.sciIdx] || '',
           specification: values[map.specIdx] || '',
           location: values[map.locIdx] || '',
+          packetMachineValue: (map.atcIdx !== -1 && values[map.atcIdx]) ? values[map.atcIdx] : undefined,
           description: '', 
+          isSmallPharmacy
         };
       }).filter(m => m.name !== '' || m.location !== '');
 
@@ -130,6 +143,62 @@ const App: React.FC = () => {
     localStorage.setItem('pharmacy_sheet_url', sheetUrl);
     localStorage.setItem('pharmacy_last_synced', lastSynced);
   }, [medications, sheetUrl, lastSynced]);
+
+  // Camera Logic
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment' } 
+      });
+      setCameraStream(stream);
+      setShowCamera(true);
+    } catch (err) {
+      console.error("Camera error:", err);
+      alert("無法啟動相機，請確認您已允許相機權限。");
+    }
+  };
+
+  const stopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(track => track.stop());
+      setCameraStream(null);
+    }
+    setShowCamera(false);
+  };
+
+  const captureImage = useCallback(async () => {
+    if (!videoRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    
+    if (ctx) {
+      ctx.drawImage(video, 0, 0);
+      const base64Image = canvas.toDataURL('image/jpeg', 0.8);
+      
+      stopCamera();
+      setIsAnalyzing(true);
+      setSearchTerm('');
+
+      const result = await identifyMedicationFromImage(base64Image, medications);
+      if (result) {
+        setSearchTerm(result);
+      } else {
+        alert('無法辨識圖片中的文字，請重試或手動輸入。');
+      }
+      setIsAnalyzing(false);
+    }
+  }, [medications, cameraStream]);
+
+  // Bind stream to video element
+  useEffect(() => {
+    if (showCamera && videoRef.current && cameraStream) {
+      videoRef.current.srcObject = cameraStream;
+    }
+  }, [showCamera, cameraStream]);
 
   const filteredMedications = medications.filter(m => {
     if (!searchTerm.trim()) return true;
@@ -162,22 +231,42 @@ const App: React.FC = () => {
       <main className="flex-1 overflow-y-auto p-5 no-scrollbar bg-slate-50/30">
         <div className="space-y-6">
           <div className="relative group mt-2">
-            <Search className="absolute left-5 top-5 text-slate-400 group-focus-within:text-[#004766] transition-colors" size={24} />
+            {isAnalyzing ? (
+              <div className="absolute left-5 top-5 z-20">
+                <Loader2 className="animate-spin text-[#004766]" size={24} />
+              </div>
+            ) : (
+              <Search className="absolute left-5 top-5 text-slate-400 group-focus-within:text-[#004766] transition-colors" size={24} />
+            )}
+            
             <input 
               type="text" 
-              placeholder="搜尋中/英/學名/商品名..." 
-              className="w-full pl-14 pr-14 py-5 bg-white border-2 border-slate-100 rounded-3xl focus:ring-8 focus:ring-[#004766]/5 focus:border-[#004766] outline-none transition-all text-xl font-black text-slate-900 placeholder:text-slate-300 shadow-sm"
+              placeholder={isAnalyzing ? "AI 辨識中..." : "搜尋藥名 或 點擊相機"} 
+              className={`w-full pl-14 pr-24 py-5 bg-white border-2 border-slate-100 rounded-3xl focus:ring-8 focus:ring-[#004766]/5 focus:border-[#004766] outline-none transition-all text-xl font-black text-slate-900 placeholder:text-slate-300 shadow-sm ${isAnalyzing ? 'opacity-50' : ''}`}
               value={searchTerm} 
               onChange={(e) => setSearchTerm(e.target.value)} 
+              disabled={isAnalyzing}
             />
-            {searchTerm && (
+            
+            <div className="absolute right-4 top-3 flex items-center gap-1">
+              {searchTerm && !isAnalyzing && (
+                <button 
+                  onClick={() => setSearchTerm('')} 
+                  className="p-2 bg-slate-100 text-slate-500 rounded-full hover:bg-slate-200 transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              )}
+              
               <button 
-                onClick={() => setSearchTerm('')} 
-                className="absolute right-4 top-4 p-2 bg-slate-100 text-slate-500 rounded-full hover:bg-slate-200 transition-colors"
+                onClick={startCamera}
+                disabled={isAnalyzing}
+                className="p-2 bg-[#004766] text-white rounded-full hover:bg-[#00334d] transition-colors shadow-md active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="拍照搜尋"
               >
-                <X size={18} />
+                <Camera size={20} />
               </button>
-            )}
+            </div>
           </div>
           
           <div className="space-y-4">
@@ -194,12 +283,18 @@ const App: React.FC = () => {
                       <h3 className="font-black text-slate-900 text-2xl mb-1 leading-tight">
                         {med.name}
                         {med.specification && <span className="ml-2 text-2xl text-red-600 font-bold">{med.specification}</span>}
+                        {med.isSmallPharmacy && <span className="ml-2 text-2xl text-rose-500 font-bold">❤庫</span>}
                       </h3>
-                      {med.englishName && <span className="text-sm text-slate-400 font-black uppercase block tracking-tight">{med.englishName}</span>}
+                      <span className="text-sm text-slate-400 font-black uppercase block tracking-tight">
+                        {med.scientificName} {med.englishName ? `(${med.englishName})` : ''}
+                      </span>
                     </div>
                     <div className="flex items-center gap-4 px-8 py-4 bg-[#004766] text-white rounded-2xl shadow-xl">
                       <MapPin size={24} className="text-cyan-300" />
-                      <span className="text-5xl font-black tracking-tighter tabular-nums flex-1">{med.location || '無儲位'}</span>
+                      <span className="text-5xl font-black tracking-tighter tabular-nums flex-1">
+                        {med.location || '無儲位'}
+                        {med.packetMachineValue && <span className="ml-3 text-4xl opacity-70 font-bold">({med.packetMachineValue})</span>}
+                      </span>
                       <ChevronRight size={20} className="opacity-20" />
                     </div>
                   </div>
@@ -218,16 +313,55 @@ const App: React.FC = () => {
             )}
           </div>
 
-          <div className="py-12 flex flex-col items-center gap-3">
-             <h2 className="text-2xl font-black tracking-tight text-slate-900">台中慈濟醫院藥學部</h2>
-             <p className="text-xl font-bold flex items-center gap-2 text-slate-900">
-               <Heart size={20} className="fill-red-600 text-red-600" />
-               <span>許文馨藥師</span>
-             </p>
-             <p className="text-lg font-bold text-slate-900">2026年1月製</p>
+          <div className="py-12 flex flex-col items-center gap-2 text-center">
+             <h2 className="text-2xl font-black tracking-tight text-slate-900 mb-2">台中慈濟醫院藥學部</h2>
+             <p className="text-xl font-bold text-slate-900">製作：許文馨</p>
+             <p className="text-lg font-bold text-slate-900">維護：施瑢家、李紀賢、李家豪</p>
           </div>
         </div>
       </main>
+
+      {/* Full Screen Camera Overlay */}
+      {showCamera && (
+        <div className="fixed inset-0 z-50 bg-black flex flex-col">
+           <div className="relative flex-1 overflow-hidden">
+             <video 
+               ref={videoRef} 
+               autoPlay 
+               playsInline 
+               className="w-full h-full object-cover"
+             />
+             <div className="absolute inset-0 border-[40px] border-black/30 pointer-events-none flex items-center justify-center">
+                <div className="w-64 h-64 border-2 border-white/50 rounded-3xl relative">
+                   <div className="absolute top-0 left-0 w-6 h-6 border-t-4 border-l-4 border-cyan-400 rounded-tl-xl -mt-1 -ml-1"></div>
+                   <div className="absolute top-0 right-0 w-6 h-6 border-t-4 border-r-4 border-cyan-400 rounded-tr-xl -mt-1 -mr-1"></div>
+                   <div className="absolute bottom-0 left-0 w-6 h-6 border-b-4 border-l-4 border-cyan-400 rounded-bl-xl -mb-1 -ml-1"></div>
+                   <div className="absolute bottom-0 right-0 w-6 h-6 border-b-4 border-r-4 border-cyan-400 rounded-br-xl -mb-1 -mr-1"></div>
+                </div>
+                <p className="absolute bottom-10 text-white/90 font-bold bg-black/40 px-4 py-1 rounded-full text-sm backdrop-blur-md">將藥品名稱對準框框</p>
+             </div>
+           </div>
+           
+           <div className="h-32 bg-black flex items-center justify-center relative shrink-0 pb-safe">
+              <button 
+                onClick={stopCamera} 
+                className="absolute left-8 text-white/80 hover:text-white p-4 rounded-full active:bg-white/10"
+              >
+                <X size={32} />
+              </button>
+              
+              <button 
+                onClick={captureImage}
+                className="w-20 h-20 bg-white rounded-full border-4 border-slate-300 p-1 active:scale-95 transition-transform"
+              >
+                 <div className="w-full h-full bg-white rounded-full border-2 border-black/10"></div>
+              </button>
+              
+              {/* Placeholder for potential gallery or flip button */}
+              <div className="absolute right-8 w-12"></div>
+           </div>
+        </div>
+      )}
     </div>
   );
 };
